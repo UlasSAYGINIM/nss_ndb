@@ -1,7 +1,7 @@
 /*
  * nss_ndb.c - NSS interface to Berkeley DB databases for passwd & group
  *
- * Copyright (c) 2017-2019 Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2017-2020 Peter Eriksson <pen@lysator.liu.se>
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -25,6 +25,8 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+#include "config.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -58,6 +60,148 @@ static __thread NDB ndb_pwd_byuid;
 static __thread NDB ndb_grp_byname;
 static __thread NDB ndb_grp_bygid;
 static __thread NDB ndb_grp_byuser;
+
+
+static __thread int f_nss_ndb_init  = 0;
+#ifdef NDB_DEBUG
+static __thread int f_nss_ndb_debug = 0;
+#endif
+
+#ifndef DEFAULT_WORKGROUP
+#define DEFAULT_WORKGROUP NULL
+#endif
+#ifndef DEFAULT_REALM
+#define DEFAULT_REALM NULL
+#endif
+
+static __thread const char *f_strip_workgroup = DEFAULT_WORKGROUP;
+static __thread const char *f_strip_realm     = DEFAULT_REALM;
+
+static void
+_nss_ndb_init(void) {
+#ifdef ENABLE_CONFIG_FILE
+  FILE *fp;
+#endif
+#ifdef NSS_NDB_CONF_VAR
+  char *bp;
+#endif
+  
+  if (f_nss_ndb_init)
+    return;
+  f_nss_ndb_init = 1;
+
+#ifdef ENABLE_CONFIG_FILE
+  if ((fp = fopen(NSS_NDB_CONF_PATH, "r")) != NULL) {
+    char buf[256];
+    int line = 0;
+    
+    while (fgets(buf, sizeof(buf), fp)) {
+      char *cp, *vp, *bp = buf;
+      
+      ++line;
+      
+      cp = strsep(&bp, " \t\n\r");
+      if (!cp || *cp == '#')
+	continue;
+
+      vp = strsep(&bp, " \t\n\r");
+      
+      if (strcmp(cp, "workgroup") == 0) {
+	
+	if (f_strip_workgroup) {
+	  free((void *) f_strip_workgroup);
+	  f_strip_workgroup = NULL;
+	}
+	
+	if (vp) {
+	  if (strcmp(vp, "*") == 0)
+	    vp = "";
+	  f_strip_workgroup = strdup(vp);
+	}
+	
+      } else if (strcmp(cp, "realm") == 0) {
+	
+	if (f_strip_realm) {
+	  free((void *) f_strip_realm);
+	  f_strip_realm = NULL;
+	}
+	
+	if (vp) {
+	  if (strcmp(vp, "*") == 0)
+	    vp = "";
+	  f_strip_realm = strdup(vp);
+	} 
+#ifdef NDB_DEBUG	
+      } else if (strcmp(cp, "debug") == 0) {
+	if (vp)
+	  sscanf(vp, "%d", &f_nss_ndb_debug);
+	else
+	  f_nss_ndb_debug = 1;
+#endif
+      }
+    }
+    fclose(fp);
+  }
+#endif
+  
+#ifdef NSS_NDB_CONF_VAR
+  if ((bp = getenv(NSS_NDB_CONF_VAR)) != NULL) {
+    char *cp;
+    
+    while ((cp = strsep(&bp, ",")) != NULL) {
+      char *vp;
+      
+      vp = strchr(cp, ':');
+      if (vp)
+	*vp++ = '\0';
+
+#ifdef NDB_DEBUG
+      if (f_nss_ndb_debug > 2)
+	fprintf(stderr, "*** nss_ndb_init: getenv(\"%s\"): key = %s, val = %s\n",
+		NSS_NDB_CONF_VAR,
+		cp, vp ? vp : "NULL");
+#endif
+      
+      if (strcmp(cp, "workgroup") == 0) {
+
+	if (f_strip_workgroup) {
+	  free((void *) f_strip_workgroup);
+	  f_strip_workgroup = NULL;
+	}
+	
+	if (vp) {
+	  if (strcmp(vp, "*") == 0)
+	    vp = "";
+	  f_strip_workgroup = strdup(vp);
+	}
+	
+      } else if (strcmp(cp, "realm") == 0) {
+	
+	if (f_strip_realm) {
+	  free((void *) f_strip_realm);
+	  f_strip_realm = NULL;
+	}
+
+	if (vp) {
+	  if (strcmp(vp, "*") == 0)
+	    vp = "";
+	  f_strip_realm = strdup(vp);
+	}
+	
+#ifdef NDB_DEBUG	
+      } else if (strcmp(cp, "debug") == 0) {
+
+	if (vp)
+	  sscanf(vp, "%d", &f_nss_ndb_debug);
+	else
+	  f_nss_ndb_debug = 1;
+#endif	
+      }
+    }
+  }
+#endif    
+}
+
 
 
 static void *
@@ -387,8 +531,9 @@ _ndb_close(NDB *ndb) {
   if (!ndb)
     return;
 
-#if DEBUG
-  fprintf(stderr, "_ndb_close(%p) [%s])\n",
+#if NDB_DEBUG
+  if (f_nss_ndb_debug)
+    fprintf(stderr, "_ndb_close(%p) [%s])\n",
 	  ndb,
 	  ndb && ndb->path ? ndb->path : "<null>");
 #endif
@@ -424,8 +569,9 @@ _ndb_open(NDB *ndb,
 #endif
   pid_t pid = getpid();
 
-#if DEBUG
-  fprintf(stderr, "_ndb_open(%p, \"%s\") -> ", ndb, path);
+#if NDB_DEBUG
+  if (f_nss_ndb_debug)
+    fprintf(stderr, "_ndb_open(%p, \"%s\") -> ", ndb, path);
 #endif
   
   if (!ndb->db || ndb->pid != pid) {
@@ -438,16 +584,18 @@ _ndb_open(NDB *ndb,
 #if DB_VERSION_MAJOR >= 4
     ret = db_env_create(&ndb->dbe, 0);
     if (ret) {
-#if DEBUG
-      fprintf(stderr, "FAIL (db_env_create)\n");
+#if NDB_DEBUG
+      if (f_nss_ndb_debug)
+	fprintf(stderr, "FAIL (db_env_create)\n");
 #endif
       return -1;
     }
     
     ret = db_create(&ndb->db, NULL, 0);
     if (ret) {
-#if DEBUG
-      fprintf(stderr, "FAIL (db_create)\n");
+#if NDB_DEBUG
+      if (f_nss_ndb_debug)
+	fprintf(stderr, "FAIL (db_create)\n");
 #endif
       
       ndb->dbe->close(ndb->dbe, 0);
@@ -456,14 +604,16 @@ _ndb_open(NDB *ndb,
       return -1;
     }
 
-#if DEBUG
-    fprintf(stderr, "created -> ");
+#if NDB_DEBUG
+    if (f_nss_ndb_debug)
+      fprintf(stderr, "created -> ");
 #endif
 
     ret = ndb->db->open(ndb->db, NULL, path, NULL, DB_BTREE, (rdwr_f ? DB_CREATE : DB_RDONLY), 0644);
     if (ret) {
-#if DEBUG
-      fprintf(stderr, "FAIL (db->open)\n");
+#if NDB_DEBUG
+      if (f_nss_ndb_debug)
+	fprintf(stderr, "FAIL (db->open)\n");
 #endif
       
       ndb->db->close(ndb->db, 0);
@@ -480,8 +630,9 @@ _ndb_open(NDB *ndb,
 #else
     ndb->db = dbopen(path, (rdwr_f ? O_RDWR|O_CREAT|O_EXLOCK : O_RDONLY|O_SHLOCK), 0644, DB_BTREE, NULL);
     if (!ndb->db) {
-#if DEBUG
-      fprintf(stderr, "FAIL (dbopen)\n");
+#if NDB_DEBUG
+      if (f_nss_ndb_debug)
+	fprintf(stderr, "FAIL (dbopen)\n");
 #endif
       return -1;
     }
@@ -489,13 +640,15 @@ _ndb_open(NDB *ndb,
 
   ndb->path = strdup(path);
   
-#if DEBUG
+#if NDB_DEBUG
+  if (f_nss_ndb_debug)
     fprintf(stderr, "opened -> ");
 #endif
   }
   
-#if DEBUG
-  fprintf(stderr, "%p\n", ndb);
+#if NDB_DEBUG
+  if (f_nss_ndb_debug)
+    fprintf(stderr, "%p\n", ndb);
 #endif
   return 0;
 }
@@ -645,13 +798,43 @@ nss_ndb_getpwnam_r(void *rv,
   char *buf            = va_arg(ap, char *);
   size_t bsize         = va_arg(ap, size_t);         
   int *res             = va_arg(ap, int *);
+  char *cp;
+  char *nbuf = NULL;
+  int rc;
 
+
+  _nss_ndb_init();
   
-  return _ndb_getkey_r(&ndb_pwd_byname,
-		      path_passwd_byname,
-		      (STR2OBJ) str2passwd,
-		      rv, mdata,
-		      name, pbuf, buf, bsize, res);
+  if (f_strip_workgroup) {
+    size_t len;
+    
+    /* Strip AD workgroup prefix if specified */
+    cp = strchr(name, '\\');
+    if (cp && (f_strip_workgroup[0] == '\0' || /* Accept all workgroups */
+	       cp-name == 0 || /* Empty workgroup specified (\user) */
+	       ((len = strlen(f_strip_workgroup)) == cp-name && 
+		strncasecmp(name, f_strip_workgroup, len) == 0))) /* Exact match */
+      name = cp+1;
+  }
+  
+  if (f_strip_realm) {
+    /* Strip Kerberos realm suffix if specified */
+    cp = strrchr(name, '@');
+    if (cp && (f_strip_realm[0] == '\0' ||        /* Accept all realms */
+	       strcasecmp(cp+1, f_strip_realm) == 0)) /* Exact match */
+      name = nbuf = strndup(name, cp-name);
+  }
+  
+  rc = _ndb_getkey_r(&ndb_pwd_byname,
+		     path_passwd_byname,
+		     (STR2OBJ) str2passwd,
+		     rv, mdata,
+		     name, pbuf, buf, bsize, res);
+
+  if (nbuf)
+    free(nbuf);
+  
+  return rc;
 }
 
 
@@ -730,12 +913,43 @@ nss_ndb_getgrnam_r(void *rv,
   char *buf           = va_arg(ap, char *);
   size_t bsize        = va_arg(ap, size_t);         
   int *res            = va_arg(ap, int *);
+  char *cp;
+  char *nbuf = NULL;
+  int rc;
+
+
+  _nss_ndb_init();
   
-  return _ndb_getkey_r(&ndb_grp_byname,
+  if (f_strip_workgroup) {
+    size_t len;
+    
+    /* Strip AD workgroup prefix if specified */
+    cp = strchr(name, '\\');
+    if (cp && (f_strip_workgroup[0] == '\0' || /* Accept all workgroups */
+	       cp-name == 0 ||                 /* Empty specified workgroup */
+	       ((len = strlen(f_strip_workgroup)) == cp-name && 
+		strncasecmp(name, f_strip_workgroup, len) == 0))) /* Exact match */
+      name = cp+1;
+  }
+  
+  if (f_strip_realm) {
+    /* Strip realm suffix if specified */
+    cp = strrchr(name, '@');
+    if (cp && (f_strip_realm[0] == '\0' ||        /* Accept all realms */
+	       strcasecmp(cp+1, f_strip_realm) == 0)) /* Exact match */
+      name = nbuf = strndup(name, cp-name);
+  }
+  
+  rc = _ndb_getkey_r(&ndb_grp_byname,
 		      path_group_byname,
 		      (STR2OBJ) str2group,
 		      rv, mdata,
 		      name, gbuf, buf, bsize, res);
+
+  if (nbuf)
+    free(nbuf);
+  
+  return rc;
 }
 
 
@@ -846,6 +1060,7 @@ nss_ndb_getgroupmembership(void *res,
   DBT key, val;
   int rc;
   char *members, *cp;
+  char *nbuf = NULL;
   
 
   if (name == NULL)
@@ -859,6 +1074,30 @@ nss_ndb_getgroupmembership(void *res,
   /* Add primary gid to groupv[] */
   (void) gr_addgid(pgid, groupv, maxgrp, groupc);
   
+
+  _nss_ndb_init();
+  
+  if (f_strip_workgroup) {
+    size_t len;
+    
+    /* Strip AD workgroup prefix if specified */
+    cp = strchr(name, '\\');
+    if (cp && (f_strip_workgroup[0] == '\0' || /* Accept all workgroups */
+	       cp-name == 0 || /* Empty workgroup specified (\user) */
+	       ((len = strlen(f_strip_workgroup)) == cp-name && 
+		strncasecmp(name, f_strip_workgroup, len) == 0))) /* Exact match */
+      name = cp+1;
+  }
+  
+  if (f_strip_realm) {
+    /* Strip Kerberos realm suffix if specified */
+    cp = strrchr(name, '@');
+    if (cp && (f_strip_realm[0] == '\0' ||        /* Accept all realms */
+	       strcasecmp(cp+1, f_strip_realm) == 0)) /* Exact match */
+      name = nbuf = strndup(name, cp-name);
+  }
+
+  
   memset(&key, 0, sizeof(key));
   memset(&val, 0, sizeof(val));
   
@@ -871,16 +1110,22 @@ nss_ndb_getgroupmembership(void *res,
   rc = _ndb_get(&ndb_grp_byuser, &key, &val, 0);
   if (rc < 0) {
     _ndb_close(&ndb_grp_byuser);
+    if (nbuf)
+      free(nbuf);
     return NS_UNAVAIL;
   }
   else if (rc > 0) {
     _ndb_close(&ndb_grp_byuser);
+    if (nbuf)
+      free(nbuf);
     return NS_NOTFOUND;
   }
 
   /* Should not happen */
   if (val.data == NULL) {
     _ndb_close(&ndb_grp_byuser);
+    if (nbuf)
+      free(nbuf);
     return NS_UNAVAIL;
   }
 
@@ -899,6 +1144,9 @@ nss_ndb_getgroupmembership(void *res,
 
   _ndb_close(&ndb_grp_byuser);
   
+  if (nbuf)
+    free(nbuf);
+	
   /* Let following nsswitch backend(s) add more groups(?) */
   return NS_NOTFOUND;
 }

@@ -1,7 +1,7 @@
 Title:	 nss_ndb
-Version: 1.0.18
+Version: 1.0.22
 Author:  Peter Eriksson <pen@lysator.liu.se>
-Date:    2019-11-28
+Date:    2020-06-12
 
 
 DESCRIPTION
@@ -31,14 +31,70 @@ The source code for this project can be downloaded from:
 
 BUILD
 
-Just run "make". To install into /usr/lib & /usr/bin, use "make install".
+Run the configure script to configure options. By default it will
+install under /usr/local but for a system install you probably want to use:
+
+  ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var
+  
+This is so it will be available early on during system boot in
+case /usr/local is on a filesystem not mounted directly.
+
+You can also enable stripping of "workgroup" (WORKGROUP\name) and "realm"
+(name@REALM) from names before lookup up data in the database with the
+
+  --with-realm[=NAME]
+  --with-workgroup[=NAME]
+
+(If NAME is not specified then all realms and/or workgroups will be stripped).
+
+It can also be configured from a config file if enabled with:
+
+  --with-config-file
+
+Configuration options (for debug/test purposes) can also be
+set from an environment variable (NSS_NDB_CONFIG by default)
+if enabled via:
+
+  --with-config-var[=NAME]
+
+By default it will compile and build using the old BerkeleyDB included in libc,
+but you may optionally build with DB6, DB5 or DB4.8 using:
+
+  --with-db[=yes|no|VER]
+
+Where VER can (currently) be 6, 5 or 4.8. In order to find the modern
+DB versions you probably also need to add:
+
+  CPPFLAGS="-I/usr/local/include" LDFLAGS="-L/usr/local/lib -R/usr/local/lib"
+
+For example:
+ 
+  ./configure --with-db=6 CPPFLAGS="-I/usr/local/include" LDFLAGS="-L/usr/local/lib -R/usr/local/lib"
 
 
 TESTING
 
-Run "make tests". This will compile the "nsstest" tool and then run a number
-of validation tests on the code. Run "make valgrind" to run the same tests under
-the valgrind memory leak/test tool.
+First make sure you have created the database files in /var/db/nss_ndb and
+populated them with data.
+
+Test before installation:
+
+  make USER=some-user-in-the-ndb-database check-ndb
+
+
+Test the installed binaries (and everything via nsswitch.conf):
+
+  make USER=some-user-in-the-ndb-database check
+
+
+Test with 'valgrind' for memory leaks:
+
+  make USER=some-user-in-the-ndb-database check-valgrind
+
+This will use the "nsstest" tool and then run a number of validation tests on
+the code. To check for memory allocation errors make sure you have the
+tool 'valgrind' installed. Beware that this takes a bit longer if you
+have a lot of data in the databases:
 
 
 USAGE
@@ -62,13 +118,13 @@ All done. You can dump the contents of the databases with:
   makendb -p path-to-database
   
 You can also use the perl script "ndbsync" to sync the NDB databases with data
-from an SQL database (mysql) if you would have such a data source.
+from an SQL database (mysql) - if you would have such a data source. 
 
 
 
 NDB DATABASE FORMAT
 
-All tables use UTF8.
+All tables use UTF-8.
 
 passwd.byname (user:password:uid:gid:class:change:expire:gecos:home:shell\0):
   Key:
@@ -94,8 +150,35 @@ group.bygid (group:password:gid:user,user,user,...\0):
   Data:
     wheel:*:0:root,Lpeter86,Lmikha02,Ljeamo93,fsAdm,Ldavby02^@
 
-group.byuser (user:uid:gid,gid,gid,...\0):
+group.byuser (user:gid,gid,gid,...\0):
   Key (user):
     peter86
   Data:
     peter86:1003258,100,101,102^@
+
+
+CONFIGURATION FILE
+
+  nss_ndb.conf (if enabled - in $(PREFIX)/etc - see Makefile)
+  
+    A simple config file like this:
+
+      # A config file for nss_ndb.conf
+      debug 0
+      workgroup AD
+      realm our.realm.com
+      
+    'workgroup and 'realm' controls if "workgroup" (WORKGROUP\user) and/or Kerberos "realm"
+    (user@realm) parts of user names and groups are stripped before matching users in the NDB database.
+    If either is set to '*' then any workgroup or realm found is stripped.
+
+
+ENVIRONMENT VARIABLE
+
+  NSS_NDB_CONFIG (if enabled at build time - se Makefile)
+
+    Value is a comma separated list of:
+    
+      debug:LEVEL	    Sets the debug level
+      workgroup:WORKGROUP   Removes the workgroup part for specific workgroups only
+      realm:REALM           Removes the realm part for specific realms only

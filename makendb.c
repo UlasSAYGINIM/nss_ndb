@@ -26,6 +26,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "config.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -82,7 +84,7 @@ void
 version(FILE *fp) {
   fprintf(fp,
 	  "[makendb, version %s - Copyright (c) 2017-2019 Peter Eriksson <pen@lysator.liu.se>]\n",
-	  VERSION);
+	  PACKAGE_VERSION);
 }
 
 
@@ -160,15 +162,22 @@ add_user_group(NDB *db,
       
     } else if (rc == 1) {
       /* New record - create*/
-
+      char buf[256];
+      int rc;
+      
+      
       if (debug_f)
 	fprintf(stderr, "*** add_user_group: %s: New Record\n", cp);
       
-      char *buf = malloc(128);
-      if (!buf)
+      rc = snprintf(buf, sizeof(buf), "%s:%s", cp, gid);
+      if (rc < 0) {
+	fprintf(stderr, "*** add_user_group: snprintf(): %s\n", strerror(errno));
 	return -1;
-
-      snprintf(buf, 128, "%s:%s", cp, gid);
+      }
+      if (rc >= sizeof(buf)) {
+	fprintf(stderr, "*** add_user_group: snprintf(): buf too small\n");
+	return -1;
+      }
       
       memset(&val, 0, sizeof(val));
       val.data = buf;
@@ -182,7 +191,6 @@ add_user_group(NDB *db,
 	return -1;
       }
       
-      free(buf);
     }
   }
 
@@ -321,6 +329,8 @@ main(int argc,
     return 0;
   }
 
+  p_id = p_name = p_user = NULL;
+    
   if (type == NULL) {
 
     sprintf(path, "%s", argv[i]);
