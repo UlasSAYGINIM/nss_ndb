@@ -1,6 +1,6 @@
 
 AC_PREREQ([2.69])
-AC_INIT([nss_ndb], [1.0.24-dev], [pen@lysator.liu.se], [nss_ndb], [https://github.com/ptrrkssn/nss_ndb])
+AC_INIT([nss_ndb], [1.0.24], [pen@lysator.liu.se], [nss_ndb], [https://github.com/ptrrkssn/nss_ndb])
 
 AC_CONFIG_SRCDIR([nss_ndb.c])
 AC_CONFIG_HEADERS([config.h])
@@ -84,14 +84,10 @@ esac
 AC_ARG_WITH([db], AS_HELP_STRING([--with-db[=ARG]], [Build with modern BerkeleyDB (yes|no|VER)]))
 case "$with_db" in
   yes)
-    db_libs="db-6 db-5 db-4.8 db"
-    db_hdrs="db6/db.h db5/db.h db48/db.h db.h"
+    db_libs="db-18 db-5 db"
+    db_hdrs="db18/db.h db5/db.h db.h"
     ;;
   no|"")
-    ;;
-  4.8|4)
-    db_libs="db-4.8"
-    db_hdrs="db48/db.h"
     ;;
   *)
     db_libs="db-${with_db}"
